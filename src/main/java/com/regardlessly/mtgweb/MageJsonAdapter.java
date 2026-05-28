@@ -110,9 +110,31 @@ public final class MageJsonAdapter {
             po.put("library_size", pv.getLibraryCount());
             po.put("graveyard_size", pv.getGraveyard() == null ? 0 : pv.getGraveyard().size());
             po.put("hand_size", pv.getHandCount());
-            // PlayerView in XMage 1.4.59 doesn't expose hand contents to
-            // spectators. For player-vs-bot mode (later) we'd subscribe to
-            // a GAME_ASK callback that carries hand data separately.
+            // The human player's own hand IS exposed via gameView.getMyHand()
+            // (XMage delivers it to the seat-holding session). In observe
+            // mode there's no "me", so myHand is empty for both players.
+            // We populate the hand field only for the seat that matches the
+            // current session's player; other players show face-down by count.
+            if (idx == 0) {
+                ArrayNode hand = po.putArray("hand");
+                try {
+                    java.util.Map<?, ?> myHand = gv.getMyHand();
+                    if (myHand != null) {
+                        for (Object cv : myHand.values()) {
+                            // CardView.getName() — reflect to avoid pulling
+                            // every view class onto our compile classpath.
+                            try {
+                                java.lang.reflect.Method gn =
+                                    cv.getClass().getMethod("getName");
+                                Object n = gn.invoke(cv);
+                                if (n instanceof String) {
+                                    hand.add((String) n);
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
             ArrayNode bf = po.putArray("battlefield");
             Map<?, PermanentView> battlefield = pv.getBattlefield();
             if (battlefield != null) {
