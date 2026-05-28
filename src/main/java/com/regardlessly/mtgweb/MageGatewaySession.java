@@ -307,11 +307,15 @@ public final class MageGatewaySession implements MageClient {
                     xmage.sendPlayerInteger(gameId, Math.max(0, n));
                     break;
                 case GAME_SELECT:
-                    // Priority window — XMage signals "pass priority for this
-                    // step" by sendPlayerUUID(null). sendPlayerAction(
-                    // PASS_PRIORITY_UNTIL_*) is for the auto-pass keybindings
-                    // (advance through multiple phases at once).
-                    xmage.sendPlayerUUID(gameId, picked);
+                    if (picked != null) {
+                        xmage.sendPlayerUUID(gameId, picked);
+                    } else {
+                        // Pass priority: XMage's HumanPlayer reads
+                        // sendPlayerBoolean(true) as "I'm done with this
+                        // priority window." sendPlayerUUID(null) gets
+                        // re-prompted instead of advancing.
+                        xmage.sendPlayerBoolean(gameId, true);
+                    }
                     break;
                 default:
                     // Everything else routes via sendPlayerUUID. Null = pass.
