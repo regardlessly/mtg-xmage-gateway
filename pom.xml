@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.regardlessly</groupId>
+    <artifactId>mtg-xmage-gateway</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>MTG XMage Gateway</name>
+    <description>
+        WebSocket↔XMage bridge. Browser-facing WS server on one side, JBoss
+        Remoting client into the XMage server process on the other. Translates
+        XMage's MageClient callbacks into JSON the existing browser app
+        consumes, and translates browser action requests into MageServer
+        RPC calls.
+
+        One WS connection = one authenticated XMage session = one game.
+    </description>
+
+    <properties>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <xmage.version>1.4.59</xmage.version>
+    </properties>
+
+    <dependencies>
+        <!-- XMage common module: brings in MageClient, MageServer, SessionImpl,
+             plus its JBoss Remoting + Hazelcast dependencies transitively.
+             We use SessionImpl to talk to the XMage server; we implement
+             MageClient ourselves to receive callbacks. -->
+        <dependency>
+            <groupId>org.mage</groupId>
+            <artifactId>mage-common</artifactId>
+            <version>${xmage.version}</version>
+        </dependency>
+
+        <!-- WebSocket server (JSR-356-style) — Tyrus standalone bundle -->
+        <dependency>
+            <groupId>org.glassfish.tyrus.bundles</groupId>
+            <artifactId>tyrus-standalone-client</artifactId>
+            <version>2.1.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.glassfish.tyrus</groupId>
+            <artifactId>tyrus-server</artifactId>
+            <version>2.1.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.glassfish.tyrus</groupId>
+            <artifactId>tyrus-container-grizzly-server</artifactId>
+            <version>2.1.5</version>
+        </dependency>
+
+        <!-- JSON in/out for the browser side. Keep flat dep, no Jackson
+             modules — the schema is small and stable. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.17.2</version>
+        </dependency>
+
+        <!-- Simple structured logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.13</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>mtg-xmage-gateway</finalName>
+        <plugins>
+            <!-- Shade everything into one fat jar so docker just runs `java -jar`. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.3</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals><goal>shade</goal></goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer
+                                    implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.regardlessly.mtgweb.GatewayMain</mainClass>
+                                </transformer>
+                                <transformer
+                                    implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
