@@ -103,6 +103,22 @@ public final class MageJsonAdapter {
         PhaseStep step = gv.getStep();
         s.put("step", step == null ? null : step.name());
         s.put("stack_size", gv.getStack() == null ? 0 : gv.getStack().size());
+        // Stack items: emit each spell/ability name so the UI can show what's
+        // about to resolve. CardsView is a Map<UUID, CardView> — iterate
+        // values and reflectively pull getName().
+        try {
+            Object stack = gv.getStack();
+            if (stack instanceof java.util.Map && !((java.util.Map<?, ?>) stack).isEmpty()) {
+                ArrayNode arr = s.putArray("stack");
+                for (Object cv : ((java.util.Map<?, ?>) stack).values()) {
+                    if (cv == null) continue;
+                    try {
+                        Object n = cv.getClass().getMethod("getName").invoke(cv);
+                        if (n instanceof String) arr.add((String) n);
+                    } catch (Exception ignored) {}
+                }
+            }
+        } catch (Exception ignored) {}
 
         // Combat groups — for each attacking creature, build a UUID→
         // CombatGroupView lookup so we can stamp "attacking" + "blocking"
