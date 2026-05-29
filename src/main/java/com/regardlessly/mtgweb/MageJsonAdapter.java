@@ -253,6 +253,39 @@ public final class MageJsonAdapter {
                             try { po2.put("toughness", Integer.parseInt(t)); } catch (Exception ignore) {}
                         }
                     }
+                    // Loyalty (planeswalkers) + defense (battles) + counters
+                    // — best-effort reflective extraction so the UI can show
+                    // them next to creature P/T.
+                    try {
+                        Object loy = perm.getClass().getMethod("getLoyalty").invoke(perm);
+                        if (loy instanceof String && !((String) loy).isEmpty() && !"0".equals(loy)) {
+                            try { po2.put("loyalty", Integer.parseInt((String) loy)); } catch (Exception ignore) {}
+                        }
+                    } catch (Exception ignored) {}
+                    try {
+                        Object def = perm.getClass().getMethod("getDefense").invoke(perm);
+                        if (def instanceof String && !((String) def).isEmpty() && !"0".equals(def)) {
+                            try { po2.put("defense", Integer.parseInt((String) def)); } catch (Exception ignore) {}
+                        }
+                    } catch (Exception ignored) {}
+                    try {
+                        Object counters = perm.getClass().getMethod("getCounters").invoke(perm);
+                        if (counters instanceof java.util.List && !((java.util.List<?>) counters).isEmpty()) {
+                            ArrayNode cArr = po2.putArray("counters");
+                            for (Object cv : (java.util.List<?>) counters) {
+                                if (cv == null) continue;
+                                try {
+                                    Object cName = cv.getClass().getMethod("getName").invoke(cv);
+                                    Object cCount = cv.getClass().getMethod("getCount").invoke(cv);
+                                    if (cName instanceof String && cCount instanceof Integer) {
+                                        ObjectNode cn = cArr.addObject();
+                                        cn.put("type", (String) cName);
+                                        cn.put("count", (Integer) cCount);
+                                    }
+                                } catch (Exception ignored2) {}
+                            }
+                        }
+                    } catch (Exception ignored) {}
                 }
             }
             if (pv.isActive()) activeIdx = idx;
