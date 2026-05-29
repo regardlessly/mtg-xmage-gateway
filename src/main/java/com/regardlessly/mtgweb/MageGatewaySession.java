@@ -66,6 +66,9 @@ public final class MageGatewaySession implements MageClient {
     private String botDeckName = "Random Forest deck";
     /** "observe" (bot vs bot, default) or "human" (P0 is the WS client). */
     private String mode = "observe";
+    /** XMage AI skill level (1..10). Read from start_game.bot_skill, defaults
+     *  to 5 (middle of the road). Applied to joinTable for COMPUTER_MAD seats. */
+    private int botSkill = 5;
     /** UUID of the human player's seat at the XMage table, when mode=human. */
     private UUID humanPlayerId;
     /** Most-recent prompt callback type — used to route the client's
@@ -123,7 +126,9 @@ public final class MageGatewaySession implements MageClient {
                     botDeckId    = (b.isMissingNode() || b.isNull() || b.asText().isEmpty()) ? null : b.asText();
                     String requestedMode = msg.path("mode").asText("observe");
                     mode = "human".equals(requestedMode) ? "human" : "observe";
-                    log.info("start_game received mode={} playerDeck={} botDeck={}", mode, playerDeckId, botDeckId);
+                    int s = msg.path("bot_skill").asInt(5);
+                    botSkill = Math.max(1, Math.min(10, s));
+                    log.info("start_game received mode={} playerDeck={} botDeck={} botSkill={}", mode, playerDeckId, botDeckId, botSkill);
                     startGame();
                     break;
                 case "choice":
@@ -207,7 +212,7 @@ public final class MageGatewaySession implements MageClient {
             // fallback for the AI seat). Swap the args so the AI's first
             // joinTable carries the bot deck, then re-submit the player's
             // deck for the human after joining.
-            xmage.joinTable(roomId, tableId, "ai_2", PlayerType.COMPUTER_MAD, 5, deck2, "");
+            xmage.joinTable(roomId, tableId, "ai_2", PlayerType.COMPUTER_MAD, botSkill, deck2, "");
             xmage.joinTable(roomId, tableId, "you", PlayerType.HUMAN, 5, deck1, "");
             xmage.startMatch(roomId, tableId);
             log.info("human match started, polling for game id");
@@ -290,8 +295,8 @@ public final class MageGatewaySession implements MageClient {
 
             DeckCardLists deck1 = resolveDeck(playerDeckId, /*isPlayer*/ true);
             DeckCardLists deck2 = resolveDeck(botDeckId, /*isPlayer*/ false);
-            xmage.joinTable(roomId, tableId, "ai_1", PlayerType.COMPUTER_MAD, 5, deck1, "");
-            xmage.joinTable(roomId, tableId, "ai_2", PlayerType.COMPUTER_MAD, 5, deck2, "");
+            xmage.joinTable(roomId, tableId, "ai_1", PlayerType.COMPUTER_MAD, botSkill, deck1, "");
+            xmage.joinTable(roomId, tableId, "ai_2", PlayerType.COMPUTER_MAD, botSkill, deck2, "");
             xmage.startMatch(roomId, tableId);
             log.info("match started, polling for game id");
             pollForGameId(/*watch=*/true);
