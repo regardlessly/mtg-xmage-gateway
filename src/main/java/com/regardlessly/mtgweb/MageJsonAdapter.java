@@ -207,6 +207,37 @@ public final class MageJsonAdapter {
                 if (Boolean.TRUE.equals(pv.getClass().getMethod("isInitiative").invoke(pv)))
                     po.put("initiative", true);
             } catch (Exception ignored) {}
+            // Player counters — poison (lethal at 10), energy, experience,
+            // rad, ticket, etc. Emit them all so the UI can surface poison
+            // prominently and other resources as pills.
+            try {
+                Object pcounters = pv.getClass().getMethod("getCounters").invoke(pv);
+                if (pcounters instanceof java.util.List && !((java.util.List<?>) pcounters).isEmpty()) {
+                    ArrayNode cArr = po.putArray("counters");
+                    for (Object cv : (java.util.List<?>) pcounters) {
+                        if (cv == null) continue;
+                        try {
+                            Object cName = cv.getClass().getMethod("getName").invoke(cv);
+                            Object cCount = cv.getClass().getMethod("getCount").invoke(cv);
+                            if (cName instanceof String && cCount instanceof Integer) {
+                                ObjectNode cn = cArr.addObject();
+                                cn.put("type", (String) cName);
+                                cn.put("count", (Integer) cCount);
+                            }
+                        } catch (Exception ignored2) {}
+                    }
+                }
+            } catch (Exception ignored) {}
+            // Designations — City's Blessing (Ascend), etc.
+            try {
+                Object designations = pv.getClass().getMethod("getDesignationNames").invoke(pv);
+                if (designations instanceof java.util.List && !((java.util.List<?>) designations).isEmpty()) {
+                    ArrayNode dArr = po.putArray("designations");
+                    for (Object d : (java.util.List<?>) designations) {
+                        if (d instanceof String) dArr.add((String) d);
+                    }
+                }
+            } catch (Exception ignored) {}
             // The human player's own hand IS exposed via gameView.getMyHand()
             // (XMage delivers it to the seat-holding session). In observe
             // mode there's no "me", so myHand is empty for both players.
@@ -329,6 +360,65 @@ public final class MageJsonAdapter {
                             }
                         }
                     } catch (Exception ignored) {}
+                    // Marked combat/effect damage on a creature. A 4/4 with 3
+                    // damage marked is one ping from dying — the single most
+                    // combat-relevant status, so the UI shows it explicitly.
+                    try {
+                        Object dmg = perm.getDamage();
+                        if (dmg instanceof Integer && (Integer) dmg > 0) {
+                            po2.put("damage", (Integer) dmg);
+                        }
+                    } catch (Exception ignored) {}
+                    // Attachment count — auras + equipment riding on this
+                    // permanent. UI badges the host so you see it's enchanted.
+                    try {
+                        Object att = perm.getAttachments();
+                        if (att instanceof java.util.List && !((java.util.List<?>) att).isEmpty()) {
+                            po2.put("attachment_count", ((java.util.List<?>) att).size());
+                        }
+                    } catch (Exception ignored) {}
+                    // Is THIS permanent attached to something (i.e. it's an
+                    // aura/equipment currently on a host)?
+                    try {
+                        Object attachedTo = perm.getAttachedTo();
+                        if (attachedTo instanceof java.util.UUID) {
+                            String hostName = nameOfUuidInView((java.util.UUID) attachedTo, gv);
+                            po2.put("attached", true);
+                            if (hostName != null) po2.put("attached_to", hostName);
+                        }
+                    } catch (Exception ignored) {}
+                    // Control change — a control-changing effect (Control
+                    // Magic, Threaten, Act of Treason) has this permanent on
+                    // a seat that isn't its owner's. isControlled() is
+                    // viewer-relative and useless in observe mode, so we
+                    // compare owner vs controller names instead. UI marks the
+                    // permanent "stolen" and notes who really owns it.
+                    try {
+                        Object owner = perm.getClass().getMethod("getNameOwner").invoke(perm);
+                        Object controller = perm.getClass().getMethod("getNameController").invoke(perm);
+                        if (owner instanceof String && controller instanceof String
+                                && !((String) owner).isEmpty()
+                                && !owner.equals(controller)) {
+                            po2.put("controlled_by_other", true);
+                            po2.put("owner_name", (String) owner);
+                        }
+                    } catch (Exception ignored) {}
+                    // Phasing — when phased out the permanent is treated as
+                    // though it doesn't exist. Dim it so the player knows.
+                    try {
+                        Object phasedIn = perm.getClass().getMethod("isPhasedIn").invoke(perm);
+                        if (Boolean.FALSE.equals(phasedIn)) po2.put("phased_out", true);
+                    } catch (Exception ignored) {}
+                    // Face-down / morph family + transform + flip — the
+                    // permanent's printed identity differs from what's shown.
+                    putBoolIfTrue(po2, "transformed", perm, "isTransformed");
+                    putBoolIfTrue(po2, "face_down", perm, "isFaceDown");
+                    putBoolIfTrue(po2, "morphed", perm, "isMorphed");
+                    putBoolIfTrue(po2, "manifested", perm, "isManifested");
+                    putBoolIfTrue(po2, "disguised", perm, "isDisguised");
+                    putBoolIfTrue(po2, "cloaked", perm, "isCloaked");
+                    putBoolIfTrue(po2, "flipped", perm, "isFlipped");
+                    putBoolIfTrue(po2, "copy", perm, "isCopy");
                 }
             }
             if (pv.isActive()) activeIdx = idx;
@@ -346,5 +436,32 @@ public final class MageJsonAdapter {
 
     private String stripHtml(String s) {
         return s.replaceAll("<[^>]+>", "").replaceAll("&nbsp;", " ").replaceAll("&amp;", "&").trim();
+    }
+
+    /** Reflectively invoke a no-arg boolean getter; emit field=true if it
+     *  returns Boolean.TRUE. Keeps the per-status emission a one-liner. */
+    private static void putBoolIfTrue(ObjectNode node, String field, Object target, String getter) {
+        try {
+            Object v = target.getClass().getMethod(getter).invoke(target);
+            if (Boolean.TRUE.equals(v)) node.put(field, true);
+        } catch (Exception ignored) {}
+    }
+
+    /** Find the display name of a permanent by UUID anywhere on any player's
+     *  battlefield in the given GameView (used to label aura/equip hosts). */
+    private static String nameOfUuidInView(java.util.UUID id, GameView gv) {
+        if (id == null || gv == null) return null;
+        try {
+            for (PlayerView pv : gv.getPlayers()) {
+                Map<?, PermanentView> bf = pv.getBattlefield();
+                if (bf == null) continue;
+                for (Map.Entry<?, PermanentView> e : bf.entrySet()) {
+                    if (id.equals(e.getKey())) {
+                        return e.getValue().getName();
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 }
