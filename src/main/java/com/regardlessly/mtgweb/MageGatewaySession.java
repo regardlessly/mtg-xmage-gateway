@@ -841,9 +841,49 @@ public final class MageGatewaySession implements MageClient {
                 }
             }
 
+            // Also build a battlefield index so we can resolve UUIDs that
+            // refer to permanents (creatures becoming attackers/blockers,
+            // activated abilities on the battlefield). Without this, every
+            // such UUID falls through to the unhelpful "Play ability" label.
+            java.util.Map<UUID, String> battlefieldNames = new java.util.HashMap<>();
+            try {
+                java.lang.reflect.Method gp = findMethod(gv.getClass(), "getPlayers");
+                if (gp != null) {
+                    Object playersList = gp.invoke(gv);
+                    if (playersList instanceof java.util.List) {
+                        for (Object pv : (java.util.List<?>) playersList) {
+                            java.lang.reflect.Method gb = findMethod(pv.getClass(), "getBattlefield");
+                            if (gb == null) continue;
+                            Object bf = gb.invoke(pv);
+                            if (!(bf instanceof java.util.Map)) continue;
+                            for (java.util.Map.Entry<?, ?> e : ((java.util.Map<?, ?>) bf).entrySet()) {
+                                if (!(e.getKey() instanceof UUID)) continue;
+                                Object perm = e.getValue();
+                                try {
+                                    Object n = perm.getClass().getMethod("getName").invoke(perm);
+                                    if (n instanceof String) {
+                                        battlefieldNames.put((UUID) e.getKey(), (String) n);
+                                    }
+                                } catch (Exception ignored) {}
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            // Is the engine asking us to declare blockers? Use phase/step to
+            // pick the right verb so the option labels read naturally.
+            String verb = "Use";
+            try {
+                Object step = gv.getClass().getMethod("getStep").invoke(gv);
+                String sn = step == null ? "" : step.toString();
+                if (sn.contains("DECLARE_BLOCKERS")) verb = "Block with";
+                else if (sn.contains("DECLARE_ATTACKERS")) verb = "Attack with";
+            } catch (Exception ignored) {}
+
             java.util.LinkedHashMap<UUID, String> out = new java.util.LinkedHashMap<>();
             for (UUID id : playableMap.keySet()) {
-                String name = "Play ability";
+                String name = null;
                 Object cv = hand.get(id);
                 if (cv != null) {
                     java.lang.reflect.Method gn = findMethod(cv.getClass(), "getName");
@@ -852,6 +892,14 @@ public final class MageGatewaySession implements MageClient {
                         if (n instanceof String && !((String) n).isEmpty()) {
                             name = "Cast " + n;
                         }
+                    }
+                }
+                if (name == null) {
+                    String bfName = battlefieldNames.get(id);
+                    if (bfName != null && !bfName.isEmpty()) {
+                        name = verb + " " + bfName;
+                    } else {
+                        name = "Play ability";
                     }
                 }
                 out.put(id, name);

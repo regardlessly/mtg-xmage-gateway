@@ -104,6 +104,59 @@ public final class MageJsonAdapter {
         s.put("step", step == null ? null : step.name());
         s.put("stack_size", gv.getStack() == null ? 0 : gv.getStack().size());
 
+        // Combat groups — for each attacking creature, build a UUID→
+        // CombatGroupView lookup so we can stamp "attacking" + "blocking"
+        // flags onto the battlefield entries below. Without this the UI has
+        // no way to tell which of the opponent's creatures are attacking.
+        java.util.Map<java.util.UUID, ObjectNode> combatByCreatureId = new java.util.HashMap<>();
+        try {
+            java.util.List<?> combat = gv.getCombat();
+            if (combat != null) {
+                for (Object g : combat) {
+                    // Reflectively pull attackers/blockers without compile-coupling.
+                    Object atks = g.getClass().getMethod("getAttackers").invoke(g);
+                    Object blks = g.getClass().getMethod("getBlockers").invoke(g);
+                    String defenderName = null;
+                    try {
+                        Object dn = g.getClass().getMethod("getDefenderName").invoke(g);
+                        if (dn instanceof String) defenderName = (String) dn;
+                    } catch (Exception ignored) {}
+                    java.util.List<String> attackerNames = new java.util.ArrayList<>();
+                    if (atks instanceof java.util.Map) {
+                        for (Object cv : ((java.util.Map<?, ?>) atks).values()) {
+                            try {
+                                Object n = cv.getClass().getMethod("getName").invoke(cv);
+                                if (n instanceof String) attackerNames.add((String) n);
+                            } catch (Exception ignored) {}
+                        }
+                    }
+                    if (atks instanceof java.util.Map) {
+                        for (java.util.Map.Entry<?, ?> e : ((java.util.Map<?, ?>) atks).entrySet()) {
+                            if (!(e.getKey() instanceof java.util.UUID)) continue;
+                            ObjectNode flags = json.createObjectNode();
+                            flags.put("attacking", true);
+                            if (defenderName != null) flags.put("defending", defenderName);
+                            combatByCreatureId.put((java.util.UUID) e.getKey(), flags);
+                        }
+                    }
+                    if (blks instanceof java.util.Map) {
+                        for (java.util.Map.Entry<?, ?> e : ((java.util.Map<?, ?>) blks).entrySet()) {
+                            if (!(e.getKey() instanceof java.util.UUID)) continue;
+                            ObjectNode flags = json.createObjectNode();
+                            flags.put("blocking", true);
+                            if (!attackerNames.isEmpty()) {
+                                ArrayNode arr = flags.putArray("blocks");
+                                for (String n : attackerNames) arr.add(n);
+                            }
+                            combatByCreatureId.put((java.util.UUID) e.getKey(), flags);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // Combat info is best-effort — never let it break snapshotting.
+        }
+
         // turn_player: index of whichever player is active.
         // Ensure "you" always appears at JSON index 0 in human mode — the
         // client assumes that mapping; we reorder XMage's seat list to honor
@@ -151,10 +204,23 @@ public final class MageJsonAdapter {
             ArrayNode bf = po.putArray("battlefield");
             Map<?, PermanentView> battlefield = pv.getBattlefield();
             if (battlefield != null) {
-                for (PermanentView perm : battlefield.values()) {
+                for (Map.Entry<?, PermanentView> bfe : battlefield.entrySet()) {
+                    PermanentView perm = bfe.getValue();
                     ObjectNode po2 = bf.addObject();
                     po2.put("name", perm.getName());
                     po2.put("tapped", perm.isTapped());
+                    // Stamp combat flags so the UI can ring attackers red &
+                    // blockers blue without having to interpret the prompt.
+                    try {
+                        java.util.UUID id = (java.util.UUID) bfe.getKey();
+                        ObjectNode flags = combatByCreatureId.get(id);
+                        if (flags != null) {
+                            if (flags.has("attacking")) po2.put("attacking", true);
+                            if (flags.has("blocking")) po2.put("blocking", true);
+                            if (flags.has("defending")) po2.put("defending", flags.get("defending").asText());
+                            if (flags.has("blocks")) po2.set("blocks", flags.get("blocks"));
+                        }
+                    } catch (Exception ignored) {}
                     // Only emit P/T when the permanent is actually a creature.
                     // XMage returns the string "0" rather than null/empty for
                     // non-creature lands and artifacts, so without this gate
