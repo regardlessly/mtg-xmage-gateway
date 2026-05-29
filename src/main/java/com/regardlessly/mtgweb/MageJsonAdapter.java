@@ -199,6 +199,14 @@ public final class MageJsonAdapter {
                 }
             } catch (Exception ignored) {}
             po.put("hand_size", pv.getHandCount());
+            // Monarch / Initiative — special game states from Commander-y
+            // formats that grant the holder card draw at end of turn.
+            try {
+                if (Boolean.TRUE.equals(pv.getClass().getMethod("isMonarch").invoke(pv)))
+                    po.put("monarch", true);
+                if (Boolean.TRUE.equals(pv.getClass().getMethod("isInitiative").invoke(pv)))
+                    po.put("initiative", true);
+            } catch (Exception ignored) {}
             // The human player's own hand IS exposed via gameView.getMyHand()
             // (XMage delivers it to the seat-holding session). In observe
             // mode there's no "me", so myHand is empty for both players.
@@ -236,6 +244,13 @@ public final class MageJsonAdapter {
                     try {
                         Object tok = perm.getClass().getMethod("isToken").invoke(perm);
                         if (Boolean.TRUE.equals(tok)) po2.put("token", true);
+                    } catch (Exception ignored) {}
+                    // Summoning sickness: a freshly-played creature without
+                    // haste can't attack or use tap abilities on its first
+                    // turn. UI shows a faded leaf to communicate "can't act yet".
+                    try {
+                        Object sick = perm.hasSummoningSickness();
+                        if (Boolean.TRUE.equals(sick)) po2.put("summoning_sick", true);
                     } catch (Exception ignored) {}
                     // Stamp combat flags so the UI can ring attackers red &
                     // blockers blue without having to interpret the prompt.
