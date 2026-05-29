@@ -190,6 +190,14 @@ public final class MageJsonAdapter {
             po.put("life", pv.getLife());
             po.put("library_size", pv.getLibraryCount());
             po.put("graveyard_size", pv.getGraveyard() == null ? 0 : pv.getGraveyard().size());
+            // Per-player exile size — let the UI show an Exile pill alongside
+            // GY for cards that have left the game (Path to Exile, etc.).
+            try {
+                Object ex = pv.getClass().getMethod("getExile").invoke(pv);
+                if (ex instanceof java.util.Map) {
+                    po.put("exile_size", ((java.util.Map<?, ?>) ex).size());
+                }
+            } catch (Exception ignored) {}
             po.put("hand_size", pv.getHandCount());
             // The human player's own hand IS exposed via gameView.getMyHand()
             // (XMage delivers it to the seat-holding session). In observe
