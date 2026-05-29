@@ -238,6 +238,45 @@ public final class MageJsonAdapter {
                     }
                 }
             } catch (Exception ignored) {}
+            // Floating mana in the pool — surfaced so the player can see what's
+            // available mid-cast. Only emit colors that are non-zero.
+            try {
+                Object mp = pv.getManaPool();
+                if (mp != null) {
+                    ObjectNode pool = json.createObjectNode();
+                    int total = 0;
+                    String[] getters = {"getWhite", "getBlue", "getBlack", "getRed", "getGreen", "getColorless"};
+                    String[] keys = {"W", "U", "B", "R", "G", "C"};
+                    for (int gi = 0; gi < getters.length; gi++) {
+                        try {
+                            Object v = mp.getClass().getMethod(getters[gi]).invoke(mp);
+                            if (v instanceof Integer && (Integer) v > 0) {
+                                pool.put(keys[gi], (Integer) v);
+                                total += (Integer) v;
+                            }
+                        } catch (Exception ignored2) {}
+                    }
+                    if (total > 0) po.set("mana_pool", pool);
+                }
+            } catch (Exception ignored) {}
+            // Command zone — emblems (from planeswalker ultimates) and the
+            // commander itself. Emit names so the UI can show a small list.
+            try {
+                Object cmd = pv.getClass().getMethod("getCommandObjectList").invoke(pv);
+                if (cmd instanceof java.util.List && !((java.util.List<?>) cmd).isEmpty()) {
+                    ArrayNode cArr = po.putArray("command_zone");
+                    for (Object c : (java.util.List<?>) cmd) {
+                        if (c == null) continue;
+                        try {
+                            Object n = c.getClass().getMethod("getName").invoke(c);
+                            // Emblems often have an empty name; label them generically.
+                            String label = (n instanceof String && !((String) n).isEmpty())
+                                ? (String) n : "Emblem";
+                            cArr.add(label);
+                        } catch (Exception ignored2) {}
+                    }
+                }
+            } catch (Exception ignored) {}
             // The human player's own hand IS exposed via gameView.getMyHand()
             // (XMage delivers it to the seat-holding session). In observe
             // mode there's no "me", so myHand is empty for both players.
