@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.websocket.Session;
 import mage.cards.decks.DeckCardInfo;
 import mage.cards.decks.DeckCardLists;
+import mage.cards.repository.CardInfo;
+import mage.cards.repository.CardRepository;
 import mage.constants.MatchTimeLimit;
 import mage.constants.MultiplayerAttackOption;
 import mage.constants.RangeOfInfluence;
@@ -175,16 +177,38 @@ public final class MageGatewaySession implements MageClient {
             opts.setWinsNeeded(1);
             opts.setMatchTimeLimit(MatchTimeLimit.MIN__15);
 
-            TableView t = xmage.createTable(roomId, opts);
+            // XMage's createTable() can return null for a few seconds after a
+            // previous match ended on the same server (the table cleanup is
+            // async). Retry up to 5 times with a short backoff so the user's
+            // rematch attempt doesn't blow up with a null-pointer.
+            TableView t = null;
+            for (int attempt = 1; attempt <= 5; attempt++) {
+                t = xmage.createTable(roomId, opts);
+                if (t != null) break;
+                log.warn("createTable returned null on attempt {}; xmage.lastError={}",
+                    attempt, xmage.getLastError());
+                try { Thread.sleep(500L * attempt); } catch (InterruptedException ignored) {}
+            }
+            if (t == null) {
+                sendError("xmage server refused createTable (5 retries) — try again");
+                return;
+            }
             tableId = t.getTableId();
-            log.info("human table created {}", tableId);
+            log.info("human table created {} after retries", tableId);
 
             DeckCardLists deck1 = resolveDeck(playerDeckId, /*isPlayer*/ true);
             DeckCardLists deck2 = resolveDeck(botDeckId, /*isPlayer*/ false);
-            // P0: human (this WS client). The session's xmage username
-            // becomes the seat name; we forward callbacks back over WS.
-            xmage.joinTable(roomId, tableId, "you", PlayerType.HUMAN, 5, deck1, "");
+            // XMage 1.4.59's joinTable seems to ignore the deck arg for the
+            // HUMAN PlayerType (the human is expected to submitDeck after
+            // joining). Empirically, the deck we pass to the COMPUTER seat
+            // goes to that seat, while the human ends up with whatever the
+            // last submitted deck was — which in our flow ends up being the
+            // *other* deck (XMage uses the deck1 we pass to "you" as the
+            // fallback for the AI seat). Swap the args so the AI's first
+            // joinTable carries the bot deck, then re-submit the player's
+            // deck for the human after joining.
             xmage.joinTable(roomId, tableId, "ai_2", PlayerType.COMPUTER_MAD, 5, deck2, "");
+            xmage.joinTable(roomId, tableId, "you", PlayerType.HUMAN, 5, deck1, "");
             xmage.startMatch(roomId, tableId);
             log.info("human match started, polling for game id");
             pollForGameId(/*watch=*/false);
@@ -249,7 +273,18 @@ public final class MageGatewaySession implements MageClient {
             opts.setWinsNeeded(1);
             opts.setMatchTimeLimit(MatchTimeLimit.MIN__15);
 
-            TableView t = xmage.createTable(roomId, opts);
+            TableView t = null;
+            for (int attempt = 1; attempt <= 5; attempt++) {
+                t = xmage.createTable(roomId, opts);
+                if (t != null) break;
+                log.warn("createTable returned null on attempt {}; xmage.lastError={}",
+                    attempt, xmage.getLastError());
+                try { Thread.sleep(500L * attempt); } catch (InterruptedException ignored) {}
+            }
+            if (t == null) {
+                sendError("xmage server refused createTable (5 retries) — try again");
+                return;
+            }
             tableId = t.getTableId();
             log.info("table created {}", tableId);
 
@@ -317,6 +352,20 @@ public final class MageGatewaySession implements MageClient {
                         xmage.sendPlayerBoolean(gameId, true);
                     }
                     break;
+                case GAME_PLAY_MANA:
+                case GAME_PLAY_XMANA:
+                    if (picked != null) {
+                        xmage.sendPlayerUUID(gameId, picked);
+                    } else {
+                        // Mana-payment pass: the player can't (or won't) pay
+                        // the cost. sendPlayerUUID(null) causes XMage to
+                        // re-prompt forever. PASS_PRIORITY_CANCEL_ALL_ACTIONS
+                        // aborts the pending activation and returns priority.
+                        xmage.sendPlayerAction(
+                            mage.constants.PlayerAction.PASS_PRIORITY_CANCEL_ALL_ACTIONS,
+                            gameId, null);
+                    }
+                    break;
                 default:
                     // Everything else routes via sendPlayerUUID. Null = pass.
                     xmage.sendPlayerUUID(gameId, picked);
@@ -349,14 +398,45 @@ public final class MageGatewaySession implements MageClient {
 
     private DeckCardLists makeBasicDeck() {
         // Minimal 60-card legal-in-Freeform deck. Forests + a few Llanowar Elves
-        // to give the AI something attackable. Future: load real precon decks.
+        // to give the AI something attackable. We resolve printings at runtime
+        // via CardRepository so the bot deck loads on whatever sets XMage has
+        // installed (the previous hardcoded M20 set/number combos didn't exist
+        // in xmage 1.4.59 and XMage silently substituted Islands).
         DeckCardLists d = new DeckCardLists();
         List<DeckCardInfo> cards = new ArrayList<>();
-        for (int i = 0; i < 40; i++) cards.add(new DeckCardInfo("Forest", "266", "M20"));
-        for (int i = 0; i < 20; i++) cards.add(new DeckCardInfo("Llanowar Elves", "180", "M20"));
+        DeckCardInfo forest = lookupPrinting("Forest");
+        DeckCardInfo elf = lookupPrinting("Llanowar Elves");
+        if (forest != null) {
+            for (int i = 0; i < 40; i++) {
+                cards.add(new DeckCardInfo(forest.getCardName(), forest.getCardNumber(), forest.getSetCode()));
+            }
+        }
+        if (elf != null) {
+            for (int i = 0; i < 20; i++) {
+                cards.add(new DeckCardInfo(elf.getCardName(), elf.getCardNumber(), elf.getSetCode()));
+            }
+        }
+        // Last-resort pad with Forest (always present in any XMage build).
+        while (forest != null && cards.size() < 60) {
+            cards.add(new DeckCardInfo(forest.getCardName(), forest.getCardNumber(), forest.getSetCode()));
+        }
         d.setCards(cards);
         d.setSideboard(new ArrayList<>());
         return d;
+    }
+
+    private DeckCardInfo lookupPrinting(String cardName) {
+        try {
+            CardInfo ci = CardRepository.instance.findCard(cardName);
+            if (ci == null) {
+                log.warn("makeBasicDeck: {} not in XMage card DB", cardName);
+                return null;
+            }
+            return new DeckCardInfo(ci.getName(), ci.getCardNumber(), ci.getSetCode());
+        } catch (Exception e) {
+            log.warn("makeBasicDeck: lookup failed for {}: {}", cardName, e.getMessage());
+            return null;
+        }
     }
 
     /** Browser disconnected — tear down. */
@@ -626,7 +706,7 @@ public final class MageGatewaySession implements MageClient {
     }
 
     @SuppressWarnings("unchecked")
-    private static java.util.Map<UUID, String> uuidStringMap(Object data) {
+    private java.util.Map<UUID, String> uuidStringMap(Object data) {
         if (data == null) return null;
         // Tried in priority order — XMage's GameClientMessage ships several
         // map fields but "options" / "abilities" carry the choosable items,
@@ -654,16 +734,24 @@ public final class MageGatewaySession implements MageClient {
                 }
             }
             // Fallback: targets Collection (XMage's "valid target UUIDs"
-            // for GAME_TARGET). Map UUIDs to short labels using the GameView.
+            // for GAME_TARGET). Map UUIDs to readable labels — preferring the
+            // actual card name (found by searching the most recent GameView)
+            // and falling back to "Target N" only for UUIDs we can't resolve.
             java.lang.reflect.Field tf = findField(data.getClass(), "targets");
             if (tf != null) {
                 tf.setAccessible(true);
                 Object v = tf.get(data);
                 if (v instanceof java.util.Collection) {
                     java.util.LinkedHashMap<UUID, String> out = new java.util.LinkedHashMap<>();
+                    int idx = 1;
                     for (Object o : (java.util.Collection<?>) v) {
                         if (o instanceof UUID) {
-                            out.put((UUID) o, "Target " + (out.size() + 1));
+                            UUID id = (UUID) o;
+                            String name = nameOfUuidInView(id, lastView);
+                            out.put(id, name != null
+                                ? "Target " + idx + " (" + name + ")"
+                                : "Target " + idx);
+                            idx++;
                         }
                     }
                     if (!out.isEmpty()) return out;
@@ -832,9 +920,101 @@ public final class MageGatewaySession implements MageClient {
     }
 
     private void sendHandshake(GameView gv) {
-        String name0 = gv.getPlayers().size() > 0 ? gv.getPlayers().get(0).getName() : "ai_1";
-        String name1 = gv.getPlayers().size() > 1 ? gv.getPlayers().get(1).getName() : "ai_2";
-        wsSend(adapter.handshake(name0, name1, playerDeckName, botDeckName, true));
+        String rawName0 = gv.getPlayers().size() > 0 ? gv.getPlayers().get(0).getName() : "ai_1";
+        String rawName1 = gv.getPlayers().size() > 1 ? gv.getPlayers().get(1).getName() : "ai_2";
+        boolean humanMode = "human".equals(mode);
+        // In human mode, always present "you" at JSON index 0 so the client
+        // can use players[0] as YOU without reading human_player. We swap
+        // XMage's seat ordering if needed; the deck labels follow.
+        String name0 = rawName0, name1 = rawName1;
+        if (humanMode && "you".equals(rawName1)) {
+            name0 = rawName1; name1 = rawName0;
+        }
+        // Now name0 == "you" in human mode (when present). Deck labels: the
+        // human's picked deck on slot 0, the bot's deck on slot 1.
+        String deck0 = humanMode ? playerDeckName : playerDeckName;
+        String deck1 = humanMode ? botDeckName    : botDeckName;
+        wsSend(adapter.handshake(name0, name1, deck0, deck1, !humanMode));
+    }
+
+    /** Locate a card by UUID across the GameView's hand / battlefield /
+     *  graveyard zones and return its display name, or null if not found.
+     *  Used to make target-selection prompts readable instead of opaque
+     *  "Target N" labels. */
+    private String nameOfUuidInView(UUID id, GameView gv) {
+        if (gv == null || id == null) return null;
+        try {
+            for (mage.view.PlayerView pv : gv.getPlayers()) {
+                // Battlefield: try direct map lookup AND scan-by-getId().
+                Object bf = pv.getBattlefield();
+                if (bf instanceof java.util.Map) {
+                    Object hit = ((java.util.Map<?, ?>) bf).get(id);
+                    if (hit != null) {
+                        String n = readName(hit);
+                        if (n != null) return n;
+                    }
+                }
+                String bfHit = scanForName(bf, id);
+                if (bfHit != null) return bfHit;
+                String gyHit = scanForName(pv.getGraveyard(), id);
+                if (gyHit != null) return gyHit;
+            }
+            // Human's own hand — XMage indexes by some UUID that doesn't
+            // always match the targets-collection UUID, so scan rather than
+            // map-lookup.
+            try {
+                java.util.Map<?, ?> myHand = gv.getMyHand();
+                if (myHand != null) {
+                    Object hit = myHand.get(id);
+                    if (hit != null) {
+                        String n = readName(hit);
+                        if (n != null) return n;
+                    }
+                    String scanned = scanForName(myHand, id);
+                    if (scanned != null) return scanned;
+                }
+            } catch (Exception ignored) {}
+            // Stack + opponents' hands + exile (best-effort)
+            try { String hit = scanForName(gv.getStack(), id); if (hit != null) return hit; } catch (Exception ignored) {}
+            for (String getter : new String[]{"getOpponentsHand", "getExile", "getCommandView", "getRevealed"}) {
+                try {
+                    Object o = gv.getClass().getMethod(getter).invoke(gv);
+                    String hit = scanForName(o, id);
+                    if (hit != null) return hit;
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private String readName(Object o) {
+        if (o == null) return null;
+        try {
+            Object n = o.getClass().getMethod("getName").invoke(o);
+            if (n instanceof String && !((String) n).isEmpty()) return (String) n;
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /** Walk a Collection/Map looking for an entry whose getId() matches the
+     *  supplied UUID; return its getName() if found. */
+    private String scanForName(Object container, UUID id) {
+        if (container == null) return null;
+        java.util.Collection<?> col = null;
+        if (container instanceof java.util.Collection) col = (java.util.Collection<?>) container;
+        else if (container instanceof java.util.Map) col = ((java.util.Map<?, ?>) container).values();
+        if (col == null) return null;
+        for (Object o : col) {
+            if (o == null) continue;
+            try {
+                Object oid = o.getClass().getMethod("getId").invoke(o);
+                if (id.equals(oid)) {
+                    Object n = o.getClass().getMethod("getName").invoke(o);
+                    if (n instanceof String && !((String) n).isEmpty()) return (String) n;
+                }
+            } catch (Exception ignored) {}
+        }
+        return null;
     }
 
     private Integer computeWinner(GameView gv) {

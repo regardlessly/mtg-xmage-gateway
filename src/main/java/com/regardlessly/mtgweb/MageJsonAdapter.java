@@ -38,7 +38,12 @@ public final class MageJsonAdapter {
         ObjectNode m = json.createObjectNode();
         m.put("type", "handshake");
         m.put("observe", observeMode);
-        m.put("human_player", observeMode ? -1 : 0);
+        // In human mode the WS client always joins as "you" — find which slot
+        // that landed on (XMage seat order isn't deterministic) so the client
+        // knows which index it controls.
+        int humanIdx = observeMode ? -1 :
+            ("you".equals(youName) ? 0 : "you".equals(oppName) ? 1 : 0);
+        m.put("human_player", humanIdx);
         ArrayNode players = m.putArray("players");
         ObjectNode p0 = players.addObject();
         p0.put("index", 0);
@@ -99,11 +104,18 @@ public final class MageJsonAdapter {
         s.put("step", step == null ? null : step.name());
         s.put("stack_size", gv.getStack() == null ? 0 : gv.getStack().size());
 
-        // turn_player: index of whichever player is active
+        // turn_player: index of whichever player is active.
+        // Ensure "you" always appears at JSON index 0 in human mode — the
+        // client assumes that mapping; we reorder XMage's seat list to honor
+        // it instead of teaching every consumer about human_player.
         ArrayNode players = s.putArray("players");
+        java.util.List<PlayerView> seats = new java.util.ArrayList<>(gv.getPlayers());
+        if (seats.size() == 2 && "you".equals(seats.get(1).getName())) {
+            java.util.Collections.swap(seats, 0, 1);
+        }
         int idx = 0;
         int activeIdx = 0;
-        for (PlayerView pv : gv.getPlayers()) {
+        for (PlayerView pv : seats) {
             ObjectNode po = players.addObject();
             po.put("index", idx);
             po.put("life", pv.getLife());
@@ -113,9 +125,10 @@ public final class MageJsonAdapter {
             // The human player's own hand IS exposed via gameView.getMyHand()
             // (XMage delivers it to the seat-holding session). In observe
             // mode there's no "me", so myHand is empty for both players.
-            // We populate the hand field only for the seat that matches the
-            // current session's player; other players show face-down by count.
-            if (idx == 0) {
+            // We populate the hand field only for the seat the WS client
+            // actually controls — detect by name ("you") since the seat index
+            // may be 0 or 1 depending on XMage's join order.
+            if ("you".equals(pv.getName())) {
                 ArrayNode hand = po.putArray("hand");
                 try {
                     java.util.Map<?, ?> myHand = gv.getMyHand();
@@ -142,13 +155,37 @@ public final class MageJsonAdapter {
                     ObjectNode po2 = bf.addObject();
                     po2.put("name", perm.getName());
                     po2.put("tapped", perm.isTapped());
-                    String p = perm.getPower();
-                    String t = perm.getToughness();
-                    if (p != null && !p.isEmpty()) {
-                        try { po2.put("power", Integer.parseInt(p)); } catch (Exception ignore) {}
+                    // Only emit P/T when the permanent is actually a creature.
+                    // XMage returns the string "0" rather than null/empty for
+                    // non-creature lands and artifacts, so without this gate
+                    // every land would render as "0/0" in the UI. We probe via
+                    // reflection on the CardType list to avoid hard-coupling to
+                    // a specific XMage view-class layout.
+                    boolean isCreature = false;
+                    try {
+                        Object types = perm.getClass().getMethod("getCardTypes").invoke(perm);
+                        if (types != null) {
+                            isCreature = types.toString().toUpperCase().contains("CREATURE");
+                        }
+                    } catch (Exception ignored) {
+                        // Fall back to a rules-text probe — typeLine in many
+                        // XMage versions is exposed via getRules().get(0).
+                        try {
+                            Object rules = perm.getClass().getMethod("getRules").invoke(perm);
+                            if (rules != null) {
+                                isCreature = rules.toString().toLowerCase().contains("creature");
+                            }
+                        } catch (Exception ignored2) {}
                     }
-                    if (t != null && !t.isEmpty()) {
-                        try { po2.put("toughness", Integer.parseInt(t)); } catch (Exception ignore) {}
+                    if (isCreature) {
+                        String p = perm.getPower();
+                        String t = perm.getToughness();
+                        if (p != null && !p.isEmpty()) {
+                            try { po2.put("power", Integer.parseInt(p)); } catch (Exception ignore) {}
+                        }
+                        if (t != null && !t.isEmpty()) {
+                            try { po2.put("toughness", Integer.parseInt(t)); } catch (Exception ignore) {}
+                        }
                     }
                 }
             }
