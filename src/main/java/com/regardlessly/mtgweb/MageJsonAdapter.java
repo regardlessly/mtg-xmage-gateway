@@ -233,6 +233,10 @@ public final class MageJsonAdapter {
                     ObjectNode po2 = bf.addObject();
                     po2.put("name", perm.getName());
                     po2.put("tapped", perm.isTapped());
+                    try {
+                        Object tok = perm.getClass().getMethod("isToken").invoke(perm);
+                        if (Boolean.TRUE.equals(tok)) po2.put("token", true);
+                    } catch (Exception ignored) {}
                     // Stamp combat flags so the UI can ring attackers red &
                     // blockers blue without having to interpret the prompt.
                     try {
